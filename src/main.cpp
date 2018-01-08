@@ -12,7 +12,7 @@ extern "C" {
 }
 
 // Remote debugging over telnet. Just run:
-// telnet roomba.local
+// telnet roomba.home
 #if LOGGING
 #include <RemoteDebug.h>
 #define DLOG(msg, ...) if(Debug.isActive(Debug.DEBUG)){Debug.printf(msg, ##__VA_ARGS__);}
@@ -114,6 +114,9 @@ bool performCommand(const char *cmdchar) {
   } else if (cmd == "clean_spot") {
     DLOG("Cleaning Spot\n");
     roomba.spot();
+  } else if (cmd == "reset") {
+    DLOG("Resetting\n");
+    ESP.restart();
   } else if (cmd == "locate") {
     DLOG("Locating\n");
     // TODO
