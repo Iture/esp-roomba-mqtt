@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <ESP.h>
 #include <ArduinoOTA.h>
 #include <Roomba.h>
 #include <PubSubClient.h>
@@ -22,6 +23,11 @@ RemoteDebug Debug;
 
 // Roomba setup
 Roomba roomba(&Serial, Roomba::Baud115200);
+
+int distanceCumulative;
+
+bool isActive=false;
+bool isCleaning=false;
 
 // Network setup
 WiFiClient wifiClient;
@@ -54,19 +60,38 @@ void wakeup(){
   // I have noticed sometimes I'll get a sensor packet while the BRC pin is
   // pulsed low but this is super unreliable.
   DLOG("Wakeup Roomba\n");
+  digitalWrite(BRC_PIN, HIGH);
+  delay(100);
   digitalWrite(BRC_PIN, LOW);
+  delay(500);
+  digitalWrite(BRC_PIN, HIGH);
+  delay(800);
+  ESP.wdtFeed();
   // Spin up a timer to bring the BRC_PIN back high again
   os_timer_disarm(&wakeupTimer);
   // I tried to use a c++ lambda here, but for some reason it'd fail on the 6th
   // iteration. I wonder if something is keyed off the function pointer.
-  os_timer_setfn(&wakeupTimer, doneWakeup, NULL);
-  os_timer_arm(&wakeupTimer, 1000, false);
+  
+  //os_timer_setfn(&wakeupTimer, doneWakeup, NULL);
+  //os_timer_arm(&wakeupTimer, 1000, false);
+  
+  //digitalWrite(BRC_PIN, HIGH);
+  //delay(1000);
+  roomba.start();
+  delay(200);
+  roomba.safeMode();
+  delay(200);
+  ESP.wdtFeed();
+  DLOG("Done waking up\n");
+  isActive=true;
  }
 
 bool performCommand(const char *cmdchar) {
-  // TODO: do this only if necessary
-  wakeup();
-
+  //It is a lot of easier to wake Roomba every time
+  if (!isCleaning)
+  {
+    wakeup();
+  };
   // Char* string comparisons dont always work
   String cmd(cmdchar);
 
@@ -74,12 +99,15 @@ bool performCommand(const char *cmdchar) {
   if (cmd == "turn_on") {
     DLOG("Turning on\n");
     roomba.cover();
+    isCleaning=true;
   } else if (cmd == "turn_off") {
     DLOG("Turning off\n");
     roomba.power();
+    isCleaning=false;
   } else if (cmd == "toggle") {
     DLOG("Toggling\n");
     roomba.cover();
+    isCleaning=true;
   } else if (cmd == "stop") {
     DLOG("Stopping\n");
     roomba.cover();
@@ -92,6 +120,7 @@ bool performCommand(const char *cmdchar) {
   } else if (cmd == "return_to_base") {
     DLOG("Returning to Base\n");
     roomba.dock();
+    isCleaning=true;
   } else {
     return false;
   }
@@ -137,7 +166,7 @@ void debugCallback() {
 void setup() {
   pinMode(BRC_PIN, OUTPUT);
   digitalWrite(BRC_PIN, HIGH);
-
+  distanceCumulative = 0;
   // Set Hostname.
   String hostname(HOSTNAME);
   WiFi.hostname(hostname);
@@ -145,6 +174,7 @@ void setup() {
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    ESP.wdtFeed();
   }
 
   ArduinoOTA.setHostname((const char *)hostname.c_str());
@@ -166,15 +196,17 @@ void setup() {
 void reconnect() {
   DLOG("Attempting MQTT connection...\n");
   // Attempt to connect
+  //if (mqttClient.connect(HOSTNAME, MQTT_USER, MQTT_PASSWORD,'/lwt/roomba',1,true,'ON')) {
   if (mqttClient.connect(HOSTNAME, MQTT_USER, MQTT_PASSWORD)) {
     DLOG("MQTT connected\n");
     mqttClient.subscribe(commandTopic);
   } else {
     DLOG("MQTT failed rc=%d try again in 5 seconds\n", mqttClient.state());
   }
+  ESP.wdtFeed();
 }
 
-void sendStatus() {
+void sendStatus(bool updateCountersOnly) {
   // Flush serial buffers
   while (Serial.available()) {
     Serial.read();
@@ -193,8 +225,10 @@ void sendStatus() {
   bool success = roomba.getSensorsList(sensors, sizeof(sensors), values, 11);
   if (!success) {
     DLOG("Failed to read sensor values from Roomba\n");
+    isActive=false;
     return;
   }
+  isActive=true;
   int16_t distance = values[0] * 256 + values[1];
   uint8_t chargingState = values[2];
   uint16_t voltage = values[3] * 256 + values[4];
@@ -202,7 +236,7 @@ void sendStatus() {
   uint16_t charge = values[7] * 256 + values[8];
   uint16_t capacity = values[9] * 256 + values[10];
 
-  DLOG("Got sensor values Distance:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n", distance, chargingState, voltage, current, charge, capacity);
+  DLOG("Got sensor values Distance:%dmm DistanceC:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n", distance, distanceCumulative, chargingState, voltage, current, charge, capacity);
 
   bool cleaning = false;
   bool docked = false;
@@ -210,42 +244,61 @@ void sendStatus() {
   String state;
   if (current < -300) {
     cleaning = true;
+    isCleaning = true;
   } else if (current > -50) {
     docked = true;
+    isCleaning=false;
   }
+  distanceCumulative = distanceCumulative + abs(distance);
+  if (updateCountersOnly == false)
+  {
+    
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& root = jsonBuffer.createObject();
+    root["battery_level"] = (charge * 100)/capacity;
+    root["cleaning"] = cleaning;
+    root["docked"] = docked;
+    root["charging"] = chargingState == Roomba::ChargeStateReconditioningCharging
+    || chargingState == Roomba::ChargeStateFullChanrging
+    || chargingState == Roomba::ChargeStateTrickleCharging;
+    root["charging_state"] = chargingState;
+    root["voltage"] = voltage;
+    root["current"] = current;
+    root["charge"] = charge;
+    root["distance"] = distanceCumulative;
+    String jsonStr;
+    root.printTo(jsonStr);
 
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  root["battery_level"] = (charge * 100)/capacity;
-  root["cleaning"] = cleaning;
-  root["docked"] = docked;
-  root["charging"] = chargingState == Roomba::ChargeStateReconditioningCharging
-  || chargingState == Roomba::ChargeStateFullChanrging
-  || chargingState == Roomba::ChargeStateTrickleCharging;
-  root["voltage"] = voltage;
-  root["current"] = current;
-  root["charge"] = charge;
-  String jsonStr;
-  root.printTo(jsonStr);
-  mqttClient.publish(statusTopic, jsonStr.c_str());
+    mqttClient.publish(statusTopic, jsonStr.c_str());
+    distanceCumulative=0;
+  }
 }
 
 int lastStateMsgTime = 0;
+int lastStateUpdateTime = 0;
 int lastWakeupTime = 0;
 
 void loop() {
+  ESP.wdtFeed();
   long now = millis();
   // If MQTT client can't connect to broker, then reconnect
   if (!mqttClient.connected()) {
     reconnect();
   } else {
-    if (now - lastWakeupTime > 50000) {
+    if (now - lastWakeupTime > TIMER_WAKEUP_INTERVAL) {
       lastWakeupTime = now;
-      wakeup();
+      if (!isActive)
+      {
+        wakeup();
+      }
     }
-    if (now - lastStateMsgTime > 1000) {
+    if (now - lastStateUpdateTime > TIMER_READ_INTERVAL) {
+      lastStateUpdateTime = now;
+      sendStatus(true);
+    }
+    if (now - lastStateMsgTime > TIMER_SEND_INTERVAL) {
       lastStateMsgTime = now;
-      sendStatus();
+      sendStatus(false);
     }
   }
 

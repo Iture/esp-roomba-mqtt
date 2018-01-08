@@ -1,9 +1,13 @@
 #include "secrets.h"
 
 #define HOSTNAME "roomba" // e.g. roomba.local
-#define BRC_PIN 14
+#define BRC_PIN 0
 
-#define MQTT_SERVER "10.0.0.2"
-#define MQTT_USER "homeassistant"
-#define MQTT_COMMAND_TOPIC "vacuum/command"
-#define MQTT_STATE_TOPIC "vacuum/state"
+#define MQTT_SERVER "172.22.0.56"
+#define MQTT_USER ""
+#define MQTT_COMMAND_TOPIC "/roomba/command"
+#define MQTT_STATE_TOPIC "/roomba/state"
+
+#define TIMER_READ_INTERVAL 500
+#define TIMER_SEND_INTERVAL 60000
+#define TIMER_WAKEUP_INTERVAL 900000
