@@ -4,3 +4,6 @@
 .clang_complete
 .gcc-flags.json
 src/secrets.h
+.vscode/c_cpp_properties.json
+platformio.ini
+.vscode/settings.json

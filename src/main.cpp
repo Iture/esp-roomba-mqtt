@@ -104,10 +104,9 @@ bool performCommand(const char *cmdchar) {
     DLOG("Turning off\n");
     roomba.power();
     isCleaning=false;
-  } else if (cmd == "toggle") {
-    DLOG("Toggling\n");
-    roomba.cover();
-    isCleaning=true;
+  } else if (cmd == "wakeup") {
+    DLOG("Waking up\n");
+    wakeup();
   } else if (cmd == "stop") {
     DLOG("Stopping\n");
     roomba.cover();
@@ -221,11 +220,12 @@ void sendStatus(bool updateCountersOnly) {
     Roomba::SensorVoltage, // 2 bytes, mV, unsigned
     Roomba::SensorCurrent, // 2 bytes, mA, signed
     Roomba::SensorBatteryCharge, // 2 bytes, mAh, unsigned
-    Roomba::SensorBatteryCapacity // 2 bytes, mAh, unsigned
+    Roomba::SensorBatteryCapacity, // 2 bytes, mAh, unsigned
+    Roomba::SensorOIMode // 1 byte
   };
   uint8_t values[11];
 
-  bool success = roomba.getSensorsList(sensors, sizeof(sensors), values, 11);
+  bool success = roomba.getSensorsList(sensors, sizeof(sensors), values, 12);
   if (!success) {
     DLOG("Failed to read sensor values from Roomba\n");
     isActive=false;
@@ -238,8 +238,8 @@ void sendStatus(bool updateCountersOnly) {
   int16_t current = values[5] * 256 + values[6];
   uint16_t charge = values[7] * 256 + values[8];
   uint16_t capacity = values[9] * 256 + values[10];
-
-  DLOG("Got sensor values Distance:%dmm DistanceC:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh\n", distance, distanceCumulative, chargingState, voltage, current, charge, capacity);
+  uint8_t OIMode = values[11];
+  DLOG("Got sensor values Distance:%dmm DistanceC:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh OIMode:%d\n", distance, distanceCumulative, chargingState, voltage, current, charge, capacity,OIMode);
 
   bool cleaning = false;
   bool docked = false;
