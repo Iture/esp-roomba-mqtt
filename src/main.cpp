@@ -59,6 +59,9 @@ void wakeup(){
   // * Setting BRC to input (high impedence) instead of high
   // I have noticed sometimes I'll get a sensor packet while the BRC pin is
   // pulsed low but this is super unreliable.
+
+
+  //TODO: Too complicated, need to refactor and stay with working part (especially for verification enablig safe mode etc.)
   DLOG("Wakeup Roomba\n");
   digitalWrite(BRC_PIN, HIGH);
   delay(100);
@@ -69,14 +72,7 @@ void wakeup(){
   ESP.wdtFeed();
   // Spin up a timer to bring the BRC_PIN back high again
   os_timer_disarm(&wakeupTimer);
-  // I tried to use a c++ lambda here, but for some reason it'd fail on the 6th
-  // iteration. I wonder if something is keyed off the function pointer.
-  
-  //os_timer_setfn(&wakeupTimer, doneWakeup, NULL);
-  //os_timer_arm(&wakeupTimer, 1000, false);
-  
-  //digitalWrite(BRC_PIN, HIGH);
-  //delay(1000);
+
   roomba.start();
   delay(200);
   roomba.safeMode();
@@ -95,6 +91,7 @@ bool performCommand(const char *cmdchar) {
   // Char* string comparisons dont always work
   String cmd(cmdchar);
 
+  //TODO: refactor this, remove unneccessary commands
   // MQTT protocol commands
   if (cmd == "turn_on") {
     DLOG("Turning on\n");
@@ -118,7 +115,9 @@ bool performCommand(const char *cmdchar) {
     ESP.restart();
   } else if (cmd == "locate") {
     DLOG("Locating\n");
-    // TODO
+    // TODO: Locating roomba - play song
+    //wakeup();
+    //roomba.playSong(1);
   } else if (cmd == "return_to_base") {
     DLOG("Returning to Base\n");
     roomba.dock();
@@ -192,7 +191,14 @@ void setup() {
   Debug.setSerialEnabled(false);
   #endif
 
+  //FIXME: Song upload
+  /*
+  wakeup();
   roomba.start();
+  uint8_t a[] = { 55, 32, 55, 32, 55, 32, 51, 24, 58, 8, 55, 32, 51, 24, 58, 8, 55, 64};
+  roomba.song(1, a, sizeof(a));
+  */
+  
 }
 
 void reconnect() {
