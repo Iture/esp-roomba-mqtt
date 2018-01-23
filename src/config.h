@@ -1,7 +1,7 @@
 #include "secrets.h"
 
 #define HOSTNAME "roomba" // e.g. roomba.local
-#define BRC_PIN 0
+#define BRC_PIN 16
 
 #define MQTT_SERVER "172.22.0.56"
 #define MQTT_USER ""

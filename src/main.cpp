@@ -39,12 +39,6 @@ const PROGMEM char *statusTopic = MQTT_STATE_TOPIC;
 
 os_timer_t wakeupTimer;
 
-void doneWakeup(void *pArg) {
-  digitalWrite(BRC_PIN, HIGH);
-  roomba.start();
-  DLOG("Done waking up\n");
-}
-
 void wakeup(){
   // TODO: There's got to be some black magic here that I'm missing to keep the
   // Roomba from going into deep sleep while on the dock. Thinking Cleaner
@@ -59,28 +53,113 @@ void wakeup(){
   // * Setting BRC to input (high impedence) instead of high
   // I have noticed sometimes I'll get a sensor packet while the BRC pin is
   // pulsed low but this is super unreliable.
+  // Spin up a timer to bring the BRC_PIN back high again
+  //os_timer_disarm(&wakeupTimer);
 
 
   //TODO: Too complicated, need to refactor and stay with working part (especially for verification enablig safe mode etc.)
   DLOG("Wakeup Roomba\n");
+  
+  pinMode(BRC_PIN, OUTPUT);
   digitalWrite(BRC_PIN, HIGH);
-  delay(100);
-  digitalWrite(BRC_PIN, LOW);
-  delay(500);
-  digitalWrite(BRC_PIN, HIGH);
-  delay(800);
-  ESP.wdtFeed();
-  // Spin up a timer to bring the BRC_PIN back high again
-  os_timer_disarm(&wakeupTimer);
 
+  delay(1000);
+  ESP.wdtFeed();
+  digitalWrite(BRC_PIN, LOW);
+  delay(1000);
+  ESP.wdtFeed();
+  digitalWrite(BRC_PIN, HIGH);
+  delay(250);
   roomba.start();
-  delay(200);
-  roomba.safeMode();
-  delay(200);
+
   ESP.wdtFeed();
   DLOG("Done waking up\n");
-  isActive=true;
  }
+
+
+void sendStatus(bool updateCountersOnly) {
+  // Flush serial buffers
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+  uint8_t sensors[] = {
+    Roomba::SensorDistance, // 2 bytes, mm, signed
+    Roomba::SensorChargingState, // 1 byte
+    Roomba::SensorVoltage, // 2 bytes, mV, unsigned
+    Roomba::SensorCurrent, // 2 bytes, mA, signed
+    Roomba::SensorBatteryCharge, // 2 bytes, mAh, unsigned
+    Roomba::SensorBatteryCapacity, // 2 bytes, mAh, unsigned
+    Roomba::SensorOIMode // 1 byte
+  };
+  uint8_t values[12];
+
+  int16_t distance = 0;
+  uint8_t chargingState = 0;
+  uint16_t voltage = 0;
+  int16_t current = 0;
+  uint16_t charge = 0;
+  uint16_t capacity =0;
+  uint8_t OIMode = 0;
+  
+
+
+  bool success = roomba.getSensorsList(sensors, sizeof(sensors), values, 12);
+  if (!success) {
+    DLOG("Failed to read sensor values from Roomba\n");
+    isActive=false;
+    //return;
+  }else {
+    distance = values[0] * 256 + values[1];
+    chargingState = values[2];
+    voltage = values[3] * 256 + values[4];
+    current = values[5] * 256 + values[6];
+    charge = values[7] * 256 + values[8];
+    capacity = values[9] * 256 + values[10];
+    OIMode = values[11];
+    isActive = true;
+    DLOG("Got sensor values Distance:%dmm DistanceC:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh OIMode:%d\n", distance, distanceCumulative, chargingState, voltage, current, charge, capacity,OIMode);
+  }
+
+
+  bool cleaning = false;
+  bool docked = false;
+
+  String state;
+  if (current < -300) {
+    cleaning = true;
+    isCleaning = true;
+  } else if (current > -50) {
+    docked = true;
+    isCleaning=false;
+  }
+  distanceCumulative = distanceCumulative + abs(distance);
+  if (updateCountersOnly == false)
+  {
+    
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& root = jsonBuffer.createObject();
+    root["battery_level"] = (charge * 100)/capacity;
+    root["cleaning"] = cleaning;
+    root["docked"] = docked;
+    root["charging"] = chargingState == Roomba::ChargeStateReconditioningCharging
+    || chargingState == Roomba::ChargeStateFullChanrging
+    || chargingState == Roomba::ChargeStateTrickleCharging;
+    root["charging_state"] = chargingState;
+    root["voltage"] = voltage;
+    root["current"] = current;
+    root["charge"] = charge;
+    root["distance"] = distanceCumulative;
+    String jsonStr; 
+    root.printTo(jsonStr);
+    DLOG("Sending report to MQTT");
+    DLOG(jsonStr.c_str());
+    mqttClient.publish(statusTopic, jsonStr.c_str());
+    distanceCumulative=0;
+  }
+}
+
+
 
 bool performCommand(const char *cmdchar) {
   //It is a lot of easier to wake Roomba every time
@@ -88,19 +167,21 @@ bool performCommand(const char *cmdchar) {
   {
     wakeup();
   };
+  
   // Char* string comparisons dont always work
   String cmd(cmdchar);
 
   //TODO: refactor this, remove unneccessary commands
   // MQTT protocol commands
   if (cmd == "turn_on") {
-    DLOG("Turning on\n");
-    roomba.cover();
-    isCleaning=true;
+    if (!isCleaning)
+    {
+      DLOG("Turning on\n");
+      roomba.cover();
+    }
   } else if (cmd == "turn_off") {
     DLOG("Turning off\n");
     roomba.power();
-    isCleaning=false;
   } else if (cmd == "wakeup") {
     DLOG("Waking up\n");
     wakeup();
@@ -116,8 +197,6 @@ bool performCommand(const char *cmdchar) {
   } else if (cmd == "locate") {
     DLOG("Locating\n");
     // TODO: Locating roomba - play song
-    //wakeup();
-    //roomba.playSong(1);
   } else if (cmd == "return_to_base") {
     DLOG("Returning to Base\n");
     roomba.dock();
@@ -125,6 +204,7 @@ bool performCommand(const char *cmdchar) {
   } else {
     return false;
   }
+
   return true;
 }
 
@@ -165,11 +245,13 @@ void debugCallback() {
 }
 
 void setup() {
-  pinMode(BRC_PIN, OUTPUT);
-  digitalWrite(BRC_PIN, HIGH);
+  wdt_enable(2000);
+
+
   distanceCumulative = 0;
   // Set Hostname.
   String hostname(HOSTNAME);
+  WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -192,12 +274,9 @@ void setup() {
   #endif
 
   //FIXME: Song upload
-  /*
   wakeup();
-  roomba.start();
-  uint8_t a[] = { 55, 32, 55, 32, 55, 32, 51, 24, 58, 8, 55, 32, 51, 24, 58, 8, 55, 64};
-  roomba.song(1, a, sizeof(a));
-  */
+  uint8_t a[] = { 0, 9, 57, 30, 57, 30, 57, 30, 53, 20, 60, 10, 57, 30, 53, 20, 60, 10, 57, 45};
+  roomba.song(0, a, sizeof(a));
   
 }
 
@@ -214,74 +293,7 @@ void reconnect() {
   ESP.wdtFeed();
 }
 
-void sendStatus(bool updateCountersOnly) {
-  // Flush serial buffers
-  while (Serial.available()) {
-    Serial.read();
-  }
 
-  uint8_t sensors[] = {
-    Roomba::SensorDistance, // 2 bytes, mm, signed
-    Roomba::SensorChargingState, // 1 byte
-    Roomba::SensorVoltage, // 2 bytes, mV, unsigned
-    Roomba::SensorCurrent, // 2 bytes, mA, signed
-    Roomba::SensorBatteryCharge, // 2 bytes, mAh, unsigned
-    Roomba::SensorBatteryCapacity, // 2 bytes, mAh, unsigned
-    Roomba::SensorOIMode // 1 byte
-  };
-  uint8_t values[11];
-
-  bool success = roomba.getSensorsList(sensors, sizeof(sensors), values, 12);
-  if (!success) {
-    DLOG("Failed to read sensor values from Roomba\n");
-    isActive=false;
-    return;
-  }
-  isActive=true;
-  int16_t distance = values[0] * 256 + values[1];
-  uint8_t chargingState = values[2];
-  uint16_t voltage = values[3] * 256 + values[4];
-  int16_t current = values[5] * 256 + values[6];
-  uint16_t charge = values[7] * 256 + values[8];
-  uint16_t capacity = values[9] * 256 + values[10];
-  uint8_t OIMode = values[11];
-  DLOG("Got sensor values Distance:%dmm DistanceC:%dmm ChargingState:%d Voltage:%dmV Current:%dmA Charge:%dmAh Capacity:%dmAh OIMode:%d\n", distance, distanceCumulative, chargingState, voltage, current, charge, capacity,OIMode);
-
-  bool cleaning = false;
-  bool docked = false;
-
-  String state;
-  if (current < -300) {
-    cleaning = true;
-    isCleaning = true;
-  } else if (current > -50) {
-    docked = true;
-    isCleaning=false;
-  }
-  distanceCumulative = distanceCumulative + abs(distance);
-  if (updateCountersOnly == false)
-  {
-    
-    StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& root = jsonBuffer.createObject();
-    root["battery_level"] = (charge * 100)/capacity;
-    root["cleaning"] = cleaning;
-    root["docked"] = docked;
-    root["charging"] = chargingState == Roomba::ChargeStateReconditioningCharging
-    || chargingState == Roomba::ChargeStateFullChanrging
-    || chargingState == Roomba::ChargeStateTrickleCharging;
-    root["charging_state"] = chargingState;
-    root["voltage"] = voltage;
-    root["current"] = current;
-    root["charge"] = charge;
-    root["distance"] = distanceCumulative;
-    String jsonStr;
-    root.printTo(jsonStr);
-
-    mqttClient.publish(statusTopic, jsonStr.c_str());
-    distanceCumulative=0;
-  }
-}
 
 int lastStateMsgTime = 0;
 int lastStateUpdateTime = 0;
